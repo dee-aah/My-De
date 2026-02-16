@@ -19,13 +19,13 @@ const projects = [
   },
   {
     id: 2,
-    title: 'Analisis Sentimen',
+    title: 'Analisis Sentimen Banjir Sumatera pada Media Sosial X',
     category: 'Data Analysis',
     image: 'https://images.unsplash.com/photo-1551288049-bebda4e38f71?ixlib=rb-4.0.3&auto=format&fit=crop&w=800&q=80',
     description: 'Model NLP untuk menganalisis sentimen publik terhadap kebijakan pemerintah menggunakan Python dan TensorFlow.',
-    tech: ['Python', 'NLP', 'TensorFlow'],
+    tech: ['Python', 'NLP', 'Machine Learning', 'Deep Learning'],
     demoLink: '#',
-    repoLink: '#'
+    repoLink: 'https://github.com/dee-aah/Analisis-Sentimen.git'
   },
   {
     id: 3,
