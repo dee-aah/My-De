@@ -16,7 +16,7 @@ const skillMap = {
     query: 'vue'
   },
   Backend: {
-    label: 'Laravel (Backend)',
+    label: 'PHP Laravel (Backend)',
     languages: ['PHP', 'Blade'],
     query: 'laravel'
   },
