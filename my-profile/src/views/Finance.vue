@@ -1,565 +1,1281 @@
+
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { supabase } from '../supabase'
-import jsPDF from 'jspdf'              // <--- TAMBAHAN BARU
-import autoTable from 'jspdf-autotable' // <--- TAMBAHAN BARU
+import jsPDF from 'jspdf'
+import autoTable from 'jspdf-autotable'
 
-
+// =====================================================
+// STATE
+// =====================================================
 const transactions = ref([])
+const members = ref([])
 const isLoading = ref(true)
+const isSaving = ref(false)
 const isModalOpen = ref(false)
-const isEditing = ref(false) // Penanda apakah sedang mode Edit atau Tambah
+const isEditing = ref(false)
 const searchQuery = ref('')
+const selectedYear = ref('')
+const activeTab = ref('all')
+const isDark = ref(false)
+const errorMessage = ref('')
 
-// Form Default
-const defaultForm = {
+const categories = [
+  'Pinjam',
+  'Bayar Pinjaman',
+  'Bayar Iuran',
+  'Lahiran',
+  'Meninggal Dunia',
+  'Kecelakaan',
+  'Nikahan',
+  'Acara BMKG',
+  'Lainnya'
+]
+
+const defaultForm = () => ({
   id: null,
-  tanggal: new Date().toISOString().substr(0, 10), // Hari ini
+  tanggal: getToday(),
   keterangan: '',
   kategori: 'Lainnya',
   tipe: 'Keluar',
-  jumlah: ''
+  jumlah: '',
+  anggota_id: '',
+  pinjaman_id: null,
+  status_pembayaran: null
+})
+
+const form = ref(defaultForm())
+
+// =====================================================
+// TANGGAL
+// =====================================================
+function getToday() {
+  const now = new Date()
+  const year = now.getFullYear()
+  const month = String(now.getMonth() + 1).padStart(2, '0')
+  const day = String(now.getDate()).padStart(2, '0')
+
+  return `${year}-${month}-${day}`
 }
 
-const form = ref({ ...defaultForm })
+function parseDate(dateString) {
+  if (!dateString) return null
 
-// Pilihan Kategori sesuai Database
-const categories = [
-  'Pinjam','Bayar Pinjaman', 'Bayar Iuran', 'Lahiran', 'Meninggal Dunia',
-  'Kecelakaan', 'Nikahan', 'Acara BMKG', 'Lainnya'
-]
+  const parts = String(dateString).slice(0, 10).split('-')
+  if (parts.length !== 3) return null
 
-// --- FORMATTER ---
-const formatRupiah = (number) => {
+  const [year, month, day] = parts.map(Number)
+
+  if (!year || !month || !day) return null
+
+  const date = new Date(year, month - 1, day)
+
+  if (
+    date.getFullYear() !== year ||
+    date.getMonth() !== month - 1 ||
+    date.getDate() !== day
+  ) {
+    return null
+  }
+
+  date.setHours(0, 0, 0, 0)
+  return date
+}
+
+// Menambahkan 3 bulan kalender tanpa masalah overflow tanggal.
+// Contoh: 31 Januari + 3 bulan = 30 April.
+function addThreeMonths(dateString) {
+  const date = parseDate(dateString)
+  if (!date) return null
+
+  const originalDay = date.getDate()
+  const targetMonth = date.getMonth() + 3
+  const targetYear = date.getFullYear() + Math.floor(targetMonth / 12)
+  const normalizedMonth = targetMonth % 12
+
+  const lastDay = new Date(
+    targetYear,
+    normalizedMonth + 1,
+    0
+  ).getDate()
+
+  const result = new Date(
+    targetYear,
+    normalizedMonth,
+    Math.min(originalDay, lastDay)
+  )
+
+  const year = result.getFullYear()
+  const month = String(result.getMonth() + 1).padStart(2, '0')
+  const day = String(result.getDate()).padStart(2, '0')
+
+  return `${year}-${month}-${day}`
+}
+
+function formatDate(dateString) {
+  if (!dateString) return '-'
+
+  const date = parseDate(dateString)
+  if (!date) return '-'
+
+  return new Intl.DateTimeFormat('id-ID', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric'
+  }).format(date)
+}
+
+function formatCurrency(value) {
   return new Intl.NumberFormat('id-ID', {
     style: 'currency',
     currency: 'IDR',
-    minimumFractionDigits: 0
-  }).format(number)
+    maximumFractionDigits: 0
+  }).format(Number(value) || 0)
 }
 
-const formatDate = (dateString) => {
-  return new Date(dateString).toLocaleDateString('id-ID', {
-    day: 'numeric', month: 'long', year: 'numeric'
-  })
+// =====================================================
+// DATA ANGGOTA
+// =====================================================
+async function fetchMembers() {
+  const { data, error } = await supabase
+    .from('anggota')
+    .select('id, nama')
+    .order('nama', { ascending: true })
+
+  if (error) throw error
+
+  members.value = data || []
 }
 
-// --- CRUD LOGIC ---
+function getMemberName(memberId) {
+  if (!memberId) return '-'
 
-// 1. READ (Ambil Data)
-const fetchTransactions = async () => {
+  const member = members.value.find(
+    item => String(item.id) === String(memberId)
+  )
+
+  return member?.nama || 'Anggota tidak ditemukan'
+}
+
+// =====================================================
+// DATA KEUANGAN
+// =====================================================
+async function fetchTransactions() {
+  const { data, error } = await supabase
+    .from('keuangan')
+    .select('*')
+    .order('tanggal', { ascending: false })
+    .order('id', { ascending: false })
+
+  if (error) throw error
+
+  transactions.value = data || []
+}
+
+async function refreshData() {
   isLoading.value = true
-  try {
-    const { data, error } = await supabase
-      .from('keuangan') // Pastikan nama tabel sama persis (Case Sensitive)
-      .select('*')
-      .order('tanggal', { ascending: false }) // Urutkan dari tanggal terbaru
+  errorMessage.value = ''
 
-    if (error) throw error
-    transactions.value = data
-  } catch (err) {
-    console.error('Error fetching:', err.message)
+  try {
+    await Promise.all([
+      fetchMembers(),
+      fetchTransactions()
+    ])
+  } catch (error) {
+    console.error('Gagal mengambil data:', error)
+    errorMessage.value =
+      error.message || 'Gagal mengambil data dari database.'
   } finally {
     isLoading.value = false
   }
 }
 
-// 2. CREATE & UPDATE (Simpan Data)
-const handleSubmit = async () => {
-  if (!form.value.keterangan || !form.value.jumlah) {
-    alert("Mohon lengkapi data!")
+// =====================================================
+// PINJAMAN DAN PEMBAYARAN
+// =====================================================
+function isLoan(item) {
+  return item?.kategori === 'Pinjam'
+}
+
+function isLoanPayment(item) {
+  return item?.kategori === 'Bayar Pinjaman'
+}
+
+function getLoanPayments(loanId, excludeTransactionId = null) {
+  return transactions.value.filter(item =>
+    isLoanPayment(item) &&
+    String(item.pinjaman_id) === String(loanId) &&
+    (
+      excludeTransactionId == null ||
+      String(item.id) !== String(excludeTransactionId)
+    )
+  )
+}
+
+function getPaidAmount(loanId, excludeTransactionId = null) {
+  return getLoanPayments(loanId, excludeTransactionId)
+    .reduce((total, item) => total + (Number(item.jumlah) || 0), 0)
+}
+
+function getRemaining(loanId, excludeTransactionId = null) {
+  const loan = transactions.value.find(
+    item => isLoan(item) && String(item.id) === String(loanId)
+  )
+
+  if (!loan) return 0
+
+  return Math.max(
+    0,
+    (Number(loan.jumlah) || 0) -
+    getPaidAmount(loanId, excludeTransactionId)
+  )
+}
+
+function getDueDate(loan) {
+  if (!loan || !isLoan(loan)) return null
+  return addThreeMonths(loan.tanggal)
+}
+
+function getDueStatus(loan) {
+  if (!loan || !isLoan(loan)) return '-'
+
+  if (getRemaining(loan.id) <= 0) {
+    return 'Lunas'
+  }
+
+  const dueDate = getDueDate(loan)
+  if (!dueDate) return 'Tanggal tidak valid'
+
+  // Lewat atau tepat pada tanggal jatuh tempo.
+  return getToday() >= dueDate
+    ? 'Jatuh Tempo'
+    : 'Belum Jatuh Tempo'
+}
+
+function getDueClass(status) {
+  if (status === 'Lunas') {
+    return 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300'
+  }
+
+  if (status === 'Jatuh Tempo') {
+    return 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'
+  }
+
+  return 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/40 dark:text-yellow-300'
+}
+
+function getLoanOptions(excludeTransactionId = null) {
+  return transactions.value
+    .filter(item =>
+      isLoan(item) &&
+      String(item.id) !== String(excludeTransactionId) &&
+      (
+        getRemaining(item.id, excludeTransactionId) > 0 ||
+        String(item.id) === String(form.value.pinjaman_id)
+      )
+    )
+    .sort((a, b) => String(b.tanggal).localeCompare(String(a.tanggal)))
+}
+
+function onCategoryChange() {
+  if (form.value.kategori === 'Pinjam') {
+    form.value.tipe = 'Keluar'
+    form.value.pinjaman_id = null
+    form.value.status_pembayaran = 'Belum Lunas'
+  } else if (form.value.kategori === 'Bayar Pinjaman') {
+    form.value.tipe = 'Masuk'
+    form.value.status_pembayaran = null
+  } else {
+    form.value.pinjaman_id = null
+    form.value.anggota_id = ''
+    form.value.status_pembayaran = null
+  }
+}
+
+function onLoanChange() {
+  const loan = transactions.value.find(
+    item =>
+      isLoan(item) &&
+      String(item.id) === String(form.value.pinjaman_id)
+  )
+
+  if (loan) {
+    form.value.anggota_id = loan.anggota_id || ''
+  } else {
+    form.value.anggota_id = ''
+  }
+}
+
+// Perbarui status pembayaran pinjaman di database.
+async function recalculateLoanStatus(loanId) {
+  if (loanId == null) return
+
+  const loan = transactions.value.find(
+    item => isLoan(item) && String(item.id) === String(loanId)
+  )
+
+  if (!loan) return
+
+  const paid = getPaidAmount(loanId)
+  const remaining = Math.max(0, Number(loan.jumlah) - paid)
+
+  const status = remaining <= 0 ? 'Lunas' : 'Belum Lunas'
+
+  const { error } = await supabase
+    .from('keuangan')
+    .update({ status_pembayaran: status })
+    .eq('id', loanId)
+
+  if (error) throw error
+
+  loan.status_pembayaran = status
+}
+
+// =====================================================
+// SALDO DAN RINGKASAN
+// =====================================================
+const totalMasuk = computed(() =>
+  transactions.value
+    .filter(item => item.tipe === 'Masuk')
+    .reduce((sum, item) => sum + (Number(item.jumlah) || 0), 0)
+)
+
+const totalKeluar = computed(() =>
+  transactions.value
+    .filter(item => item.tipe === 'Keluar')
+    .reduce((sum, item) => sum + (Number(item.jumlah) || 0), 0)
+)
+
+const saldo = computed(() => totalMasuk.value - totalKeluar.value)
+
+const totalPinjamanAktif = computed(() =>
+  transactions.value
+    .filter(item => isLoan(item))
+    .reduce((sum, loan) => sum + getRemaining(loan.id), 0)
+)
+
+const years = computed(() => {
+  const yearSet = new Set(
+    transactions.value
+      .map(item => item.tanggal?.slice(0, 4))
+      .filter(Boolean)
+  )
+
+  return [...yearSet].sort((a, b) => b.localeCompare(a))
+})
+
+const filteredTransactions = computed(() => {
+  const query = searchQuery.value.trim().toLowerCase()
+
+  return transactions.value.filter(item => {
+    const matchesSearch =
+      !query ||
+      String(item.keterangan || '').toLowerCase().includes(query) ||
+      String(item.kategori || '').toLowerCase().includes(query) ||
+      getMemberName(item.anggota_id).toLowerCase().includes(query)
+
+    const matchesYear =
+      !selectedYear.value ||
+      item.tanggal?.slice(0, 4) === selectedYear.value
+
+    const matchesTab =
+      activeTab.value === 'all' ||
+      (activeTab.value === 'loan' && isLoan(item)) ||
+      (activeTab.value === 'payment' && isLoanPayment(item))
+
+    return matchesSearch && matchesYear && matchesTab
+  })
+})
+
+// =====================================================
+// MODAL TAMBAH DAN EDIT
+// =====================================================
+function openAddModal() {
+  isEditing.value = false
+  form.value = defaultForm()
+  errorMessage.value = ''
+  isModalOpen.value = true
+}
+
+function openEditModal(item) {
+  isEditing.value = true
+
+  form.value = {
+    ...defaultForm(),
+    ...item,
+    jumlah: Number(item.jumlah) || '',
+    anggota_id: item.anggota_id || '',
+    pinjaman_id: item.pinjaman_id ?? null
+  }
+
+  errorMessage.value = ''
+  isModalOpen.value = true
+}
+
+function closeModal() {
+  if (isSaving.value) return
+
+  isModalOpen.value = false
+  form.value = defaultForm()
+}
+
+// =====================================================
+// SIMPAN TRANSAKSI
+// =====================================================
+async function handleSubmit() {
+  errorMessage.value = ''
+
+  const kategori = form.value.kategori
+  const isNewLoan = kategori === 'Pinjam'
+  const isPayment = kategori === 'Bayar Pinjaman'
+
+  const jumlah = Number(form.value.jumlah)
+  const tanggal = form.value.tanggal
+  const keterangan = form.value.keterangan.trim()
+
+  if (!tanggal || !parseDate(tanggal)) {
+    errorMessage.value = 'Tanggal transaksi tidak valid.'
     return
   }
 
-  try {
-    const payload = {
-      tanggal: form.value.tanggal,
-      keterangan: form.value.keterangan,
-      kategori: form.value.kategori,
-      tipe: form.value.tipe,
-      jumlah: form.value.jumlah
+  if (!keterangan) {
+    errorMessage.value = 'Keterangan wajib diisi.'
+    return
+  }
+
+  if (!Number.isFinite(jumlah) || jumlah <= 0) {
+    errorMessage.value = 'Jumlah harus lebih besar dari nol.'
+    return
+  }
+
+  if (isNewLoan && !form.value.anggota_id) {
+    errorMessage.value = 'Pilih anggota yang melakukan pinjaman.'
+    return
+  }
+
+  if (
+    form.value.anggota_id &&
+    !members.value.some(
+      member => String(member.id) === String(form.value.anggota_id)
+    )
+  ) {
+    errorMessage.value = 'Anggota yang dipilih tidak ditemukan.'
+    return
+  }
+
+  let selectedLoan = null
+
+  if (isPayment) {
+    if (!form.value.pinjaman_id) {
+      errorMessage.value = 'Pilih pinjaman yang akan dibayar.'
+      return
     }
 
-    let error
+    selectedLoan = transactions.value.find(
+      item =>
+        isLoan(item) &&
+        String(item.id) === String(form.value.pinjaman_id)
+    )
+
+    if (!selectedLoan) {
+      errorMessage.value = 'Data pinjaman tidak ditemukan.'
+      return
+    }
+
+    const remaining = getRemaining(
+      selectedLoan.id,
+      isEditing.value && isLoanPayment(form.value)
+        ? form.value.id
+        : null
+    )
+
+    if (jumlah > remaining) {
+      errorMessage.value =
+        `Pembayaran melebihi sisa pinjaman ${formatCurrency(remaining)}.`
+      return
+    }
+  }
+
+  // Simpan tipe sesuai aturan kategori.
+  const tipe = isNewLoan
+    ? 'Keluar'
+    : isPayment
+      ? 'Masuk'
+      : form.value.tipe
+
+  const payload = {
+    tanggal,
+    keterangan,
+    kategori,
+    tipe,
+    jumlah,
+    anggota_id: isNewLoan
+      ? form.value.anggota_id
+      : isPayment
+        ? selectedLoan.anggota_id || null
+        : null,
+    pinjaman_id: isPayment ? selectedLoan.id : null,
+    status_pembayaran: isNewLoan ? 'Belum Lunas' : null
+  }
+
+  isSaving.value = true
+
+  const oldTransaction = isEditing.value
+    ? transactions.value.find(
+        item => String(item.id) === String(form.value.id)
+      )
+    : null
+
+  const affectedLoanIds = new Set()
+
+  if (oldTransaction && isLoanPayment(oldTransaction)) {
+    if (oldTransaction.pinjaman_id != null) {
+      affectedLoanIds.add(String(oldTransaction.pinjaman_id))
+    }
+  }
+
+  if (isPayment && selectedLoan?.id != null) {
+    affectedLoanIds.add(String(selectedLoan.id))
+  }
+
+  try {
+    let savedData
 
     if (isEditing.value) {
-      // Logic UPDATE
-      const { error: updateError } = await supabase
+      const { data, error } = await supabase
         .from('keuangan')
         .update(payload)
         .eq('id', form.value.id)
-      error = updateError
+        .select()
+        .single()
+
+      if (error) throw error
+      savedData = data
     } else {
-      // Logic CREATE
-      const { error: insertError } = await supabase
+      const { data, error } = await supabase
         .from('keuangan')
-        .insert([payload])
-      error = insertError
+        .insert(payload)
+        .select()
+        .single()
+
+      if (error) throw error
+      savedData = data
     }
 
-    if (error) throw error
-
-    // Refresh data & Tutup Modal
+    // Muat ulang agar perhitungan menggunakan data terbaru.
     await fetchTransactions()
-    closeModal()
-    alert(isEditing.value ? "Data berhasil diupdate!" : "Data berhasil ditambahkan!")
 
-  } catch (err) {
-    alert('Gagal menyimpan: ' + err.message)
+    // Jika transaksi yang diedit adalah pinjaman, hitung ulang
+    // status pinjaman tersebut juga.
+    if (oldTransaction && isLoan(oldTransaction)) {
+      affectedLoanIds.add(String(oldTransaction.id))
+    }
+
+    if (isNewLoan && savedData?.id != null) {
+      affectedLoanIds.add(String(savedData.id))
+    }
+
+    for (const loanId of affectedLoanIds) {
+      await recalculateLoanStatus(loanId)
+    }
+
+    await fetchTransactions()
+
+    isModalOpen.value = false
+    form.value = defaultForm()
+  } catch (error) {
+    console.error('Gagal menyimpan transaksi:', error)
+    errorMessage.value =
+      error.message || 'Terjadi kesalahan saat menyimpan data.'
+  } finally {
+    isSaving.value = false
   }
 }
 
-// 3. DELETE (Hapus Data)
-const deleteTransaction = async (id) => {
-  if (!confirm("Yakin ingin menghapus data ini?")) return
+// =====================================================
+// HAPUS TRANSAKSI
+// =====================================================
+async function deleteTransaction(item) {
+  const isLoanItem = isLoan(item)
+  const isPayment = isLoanPayment(item)
+
+  if (isLoanItem && getPaidAmount(item.id) > 0) {
+    alert(
+      'Pinjaman ini sudah memiliki pembayaran. ' +
+      'Hapus transaksi pembayarannya terlebih dahulu.'
+    )
+    return
+  }
+
+  const message = isPayment
+    ? 'Yakin ingin menghapus transaksi pembayaran ini?'
+    : 'Yakin ingin menghapus transaksi ini?'
+
+  if (!confirm(message)) return
+
+  errorMessage.value = ''
 
   try {
+    const affectedLoanId = isPayment ? item.pinjaman_id : null
+
     const { error } = await supabase
       .from('keuangan')
       .delete()
-      .eq('id', id)
+      .eq('id', item.id)
 
     if (error) throw error
 
-    // Hapus dari state lokal (biar ga perlu fetch ulang server)
-    transactions.value = transactions.value.filter(t => t.id !== id)
+    await fetchTransactions()
 
-  } catch (err) {
-    alert('Gagal menghapus: ' + err.message)
+    if (affectedLoanId != null) {
+      await recalculateLoanStatus(affectedLoanId)
+      await fetchTransactions()
+    }
+  } catch (error) {
+    console.error('Gagal menghapus transaksi:', error)
+    errorMessage.value =
+      error.message || 'Gagal menghapus transaksi.'
   }
 }
 
-// --- MODAL CONTROLS ---
-const openAddModal = () => {
-  isEditing.value = false
-  form.value = { ...defaultForm } // Reset form
-  isModalOpen.value = true
-}
+// =====================================================
+// EKSPOR PDF
+// =====================================================
+function exportPDF() {
+  try {
+    const doc = new jsPDF({
+      orientation: 'landscape',
+      unit: 'mm',
+      format: 'a4'
+    })
 
-const openEditModal = (item) => {
-  isEditing.value = true
-  // Copy item ke form
-  form.value = { ...item }
-  isModalOpen.value = true
-}
+    doc.setFontSize(16)
+    doc.text('LAPORAN KEUANGAN BMKG', 14, 15)
 
-const closeModal = () => {
-  isModalOpen.value = false
-}
+    doc.setFontSize(9)
+    doc.text(
+      `Tanggal cetak: ${formatDate(getToday())}`,
+      14,
+      22
+    )
 
-// --- SEARCH ---
-// const filteredTransactions = computed(() => {
-//   if (!searchQuery.value) return transactions.value
-//   const query = searchQuery.value.toLowerCase()
-//   return transactions.value.filter(t =>
-//     t.keterangan.toLowerCase().includes(query) ||
-//     t.kategori.toLowerCase().includes(query)
-//   )
-// })
+    const rows = filteredTransactions.value.map(item => [
+      formatDate(item.tanggal),
+      getMemberName(item.anggota_id),
+      item.keterangan || '-',
+      item.kategori || '-',
+      item.tipe || '-',
+      formatCurrency(item.jumlah),
+      isLoan(item)
+        ? getDueStatus(item)
+        : isLoanPayment(item)
+          ? 'Pembayaran'
+          : '-'
+    ])
 
-// --- STATS ---
-const totalSaldo = computed(() => {
-  const masuk = transactions.value.filter(t => t.tipe === 'Masuk').reduce((acc, curr) => acc + curr.jumlah, 0)
-  const keluar = transactions.value.filter(t => t.tipe === 'Keluar').reduce((acc, curr) => acc + curr.jumlah, 0)
-  return masuk - keluar
-})
+    autoTable(doc, {
+      startY: 28,
+      head: [[
+        'Tanggal',
+        'Nama Anggota',
+        'Keterangan',
+        'Kategori',
+        'Tipe',
+        'Jumlah',
+        'Status Pinjaman'
+      ]],
+      body: rows,
+      styles: {
+        fontSize: 8,
+        cellPadding: 2
+      },
+      headStyles: {
+        fillColor: [31, 78, 121]
+      }
+    })
 
-const displayJumlah = computed(() => {
-  if (!form.value.jumlah) return ''
-  // Format ke Indonesia (pake titik untuk ribuan)
-  return new Intl.NumberFormat('id-ID').format(form.value.jumlah)
-})
+    const finalY = doc.lastAutoTable?.finalY || 35
 
-// 2. Fungsi Event Handler saat MENGETIK
-const onInputJumlah = (event) => {
-  // Ambil nilai dari input
-  let rawValue = event.target.value
-  
-  // Hapus semua karakter KECUALI angka (hapus titik/koma/huruf)
-  rawValue = rawValue.replace(/\D/g, '')
-  
-  // Simpan ke state form sebagai ANGKA murni (bukan string)
-  // Jika kosong, set null atau ''
-  form.value.jumlah = rawValue ? parseInt(rawValue) : ''
-}
+    doc.setFontSize(10)
+    doc.text(
+      `Total Masuk: ${formatCurrency(totalMasuk.value)}`,
+      14,
+      finalY + 10
+    )
+    doc.text(
+      `Total Keluar: ${formatCurrency(totalKeluar.value)}`,
+      14,
+      finalY + 17
+    )
+    doc.text(
+      `Saldo: ${formatCurrency(saldo.value)}`,
+      14,
+      finalY + 24
+    )
 
-const activeDropdown = ref(null) // Menyimpan ID item yang menu-nya sedang terbuka
-
-const toggleDropdown = (id) => {
-  if (activeDropdown.value === id) {
-    activeDropdown.value = null // Tutup jika diklik lagi
-  } else {
-    activeDropdown.value = id // Buka menu untuk ID ini
+    doc.save(`Laporan-Keuangan-BMKG-${getToday()}.pdf`)
+  } catch (error) {
+    console.error('Gagal membuat PDF:', error)
+    alert('Gagal membuat PDF. Periksa kembali data transaksi.')
   }
 }
 
-// Tutup menu saat klik Edit/Hapus
-const handleAction = (action, item) => {
-  activeDropdown.value = null // Tutup menu
-  if (action === 'edit') openEditModal(item)
-  if (action === 'delete') deleteTransaction(item.id)
-}
-
-// --- STATE FILTER ---
-const selectedCategory = ref('') 
-const selectedYear = ref('')     
-
-// --- COMPUTED: LIST TAHUN OTOMATIS ---
-const availableYears = computed(() => {
-  const years = transactions.value.map(t => new Date(t.tanggal).getFullYear())
-  return [...new Set(years)].sort((a, b) => b - a) // Urutkan tahun terbaru
-})
-
-// --- UPDATE FILTERED TRANSACTIONS ---
-// Pastikan computed 'filteredTransactions' menggabungkan logic search Anda + filter ini
-const filteredTransactions = computed(() => {
-  return transactions.value.filter(t => {
-    // 1. Logic Search (Biarkan logic search Anda yang lama di sini)
-    const matchSearch = searchQuery.value 
-      ? t.keterangan.toLowerCase().includes(searchQuery.value.toLowerCase())
-      : true
-
-    // 2. Logic Kategori (BARU)
-    const matchCategory = selectedCategory.value 
-      ? t.kategori === selectedCategory.value 
-      : true
-
-    // 3. Logic Tahun (BARU)
-    const year = new Date(t.tanggal).getFullYear()
-    const matchYear = selectedYear.value 
-      ? year === parseInt(selectedYear.value) 
-      : true
-
-    return matchSearch && matchCategory && matchYear
-  })
-})
-
-// ... (Kode state, form, fetchTransactions, dll biarkan sama) ...
-
-// --- LOGIKA CETAK PDF ---
-const downloadPDF = () => {
-  const doc = new jsPDF()
-
-  // 1. Judul Laporan
-  doc.setFontSize(16)
-  doc.text('LAPORAN KAS KEUANGAN', 105, 15, { align: 'center' })
-  doc.setFontSize(10)
-  doc.text(`Dicetak pada: ${new Date().toLocaleDateString('id-ID')}`, 105, 22, { align: 'center' })
-
-  // 2. Persiapkan Data untuk Tabel
-  // Kita harus mengurutkan data dari tanggal TERLAMA ke TERBARU agar saldo berjalan benar
-  // (Data asli 'transactions' biasanya urut terbaru di atas, jadi kita reverse dulu untuk kalkulasi)
-  const dataForPdf = [...filteredTransactions.value].sort((a, b) => new Date(a.tanggal) - new Date(b.tanggal))
-
-  let runningBalance = 0 // Saldo awal
-  
-  const tableBody = dataForPdf.map((item, index) => {
-    // Tentukan Pemasukan/Pengeluaran
-    let pemasukan = ''
-    let pengeluaran = ''
-    
-    // Konversi item.jumlah ke angka murni untuk kalkulasi
-    const nominal = Number(item.jumlah)
-
-    if (item.tipe === 'Masuk') {
-      pemasukan = formatRupiah(nominal)
-      runningBalance += nominal
-    } else {
-      pengeluaran = formatRupiah(nominal)
-      runningBalance -= nominal
-    }
-
-    return [
-      index + 1,                    // No
-      item.keterangan,              // Keterangan
-      pemasukan,                    // Pemasukan
-      pengeluaran,                  // Pengeluaran
-      formatDate(item.tanggal),     // Waktu
-      formatRupiah(runningBalance)  // Jumlah (Saldo Berjalan)
-    ]
-  })
-
-  // 3. Buat Tabel Menggunakan autoTable
-  autoTable(doc, {
-    startY: 30,
-    head: [['No', 'Keterangan', 'Pemasukan', 'Pengeluaran', 'Waktu', 'Saldo']],
-    body: tableBody,
-    theme: 'grid', // Agar ada garis kotak-kotak seperti excel
-    headStyles: {
-      fillColor: [66, 133, 244], // Warna Biru Header (RGB)
-      textColor: [255, 255, 255], // Teks Putih
-      halign: 'center',
-      fontStyle: 'bold'
-    },
-    styles: {
-      fontSize: 9,
-      cellPadding: 3,
-      valign: 'middle'
-    },
-    columnStyles: {
-      0: { halign: 'center', cellWidth: 10 }, // No
-      1: { cellWidth: 'auto' },               // Keterangan
-      2: { halign: 'right', textColor: [0, 128, 0] }, // Pemasukan (Hijau)
-      3: { halign: 'right', textColor: [255, 0, 0] }, // Pengeluaran (Merah)
-      4: { halign: 'center' },                // Waktu
-      5: { halign: 'right', fontStyle: 'bold' } // Saldo (Bold)
-    },
-    // Fungsi untuk styling baris selang-seling (Zebra striping)
-    didParseCell: function (data) {
-       // Bagian ini otomatis ditangani theme: 'grid' atau 'striped'
-    }
-  })
-
-  // 4. Simpan File
-  doc.save(`Laporan-Kas-${new Date().toISOString().slice(0,10)}.pdf`)
-}
-// --- STATE ---
-
-onMounted(() => {
-  fetchTransactions()
-})
+// =====================================================
+// INISIALISASI
+// =====================================================
+onMounted(refreshData)
 </script>
 
 <template>
-  <div class="space-y-6 ">
-
-    <div class="flex flex-col md:flex-row justify-between items-center gap-4">
-      <div>
-        <h1 class="text-2xl text-center lg:text-start font-bold text-gray-800 dark:text-white">Data Keuangan</h1>
-        <p class="text-gray-500 dark:text-gray-400 text-sm">Rekap Pemasukan dan Pengeluaran.</p>
-      </div>
-</div>
-
-    <div
-      class=" bg-white dark:bg-gradient-to-r from-gray-800 to-gray-900 rounded-xl p-6 text-black dark:text-white shadow-lg">
-      <p class="text-gray-400 text-sm mb-1">Total Saldo Saat Ini</p>
-      <h2 class="text-3xl  font-bold">{{ formatRupiah(totalSaldo) }}</h2>
-    </div>
-
-    <div
-      class="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700 overflow-hidden">
-
-      <div class="p-4 border-b border-gray-100 dark:border-gray-700 flex flex-col md:flex-row md:items-center justify-between gap-4">
-    
-    <div class="flex flex-col sm:flex-row gap-3 w-full md:w-auto">
-      <div class=" grid grid-cols-2  w-full gap-3 "> 
-      <div class="relative ">
-        <select v-model="selectedCategory" 
-          class="appearance-none w-full md:w-48 pl-4 pr-10 py-2 rounded-lg bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 text-sm text-gray-700 dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer">
-          <option value="">Semua Kategori</option>
-          <option v-for="cat in categories" :key="cat" :value="cat">{{ cat }}</option>
-        </select>
-        <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-gray-500">
-          <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" /></svg>
+  <div
+    class="min-h-screen p-4 sm:p-6 transition-colors"
+    :class="isDark
+      ? 'bg-slate-950 text-slate-100'
+      : 'bg-slate-50 text-slate-800'"
+  >
+    <div class="mx-auto max-w-7xl space-y-6">
+      <!-- HEADER -->
+      <header class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h1 class="text-2xl font-bold sm:text-3xl">
+            Keuangan BMKG
+          </h1>
+          <p
+            class="mt-1 text-sm"
+            :class="isDark ? 'text-slate-400' : 'text-slate-500'"
+          >
+            Kelola transaksi, pinjaman anggota, dan pembayaran.
+          </p>
         </div>
-      </div>     
-      <div class="relative">
-        <select v-model="selectedYear" 
-          class="appearance-none w-full md:w-35 pl-4 pr-10 py-2 rounded-lg bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 text-sm text-gray-700 dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer">
-          <option value="">Semua Tahun</option>
-          <option v-for="year in availableYears" :key="year" :value="year">{{ year }}</option>
-        </select>
-        <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-gray-500">
-          <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" /></svg>
+
+        <div class="flex flex-wrap gap-2">
+          <button
+            type="button"
+            class="rounded-lg border px-4 py-2 text-sm font-medium"
+            :class="isDark
+              ? 'border-slate-700 bg-slate-900 hover:bg-slate-800'
+              : 'border-slate-200 bg-white hover:bg-slate-100'"
+            @click="isDark = !isDark"
+          >
+            {{ isDark ? 'Mode Terang' : 'Mode Gelap' }}
+          </button>
+
+          <button
+            type="button"
+            class="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700"
+            @click="exportPDF"
+          >
+            Ekspor PDF
+          </button>
+
+          <button
+            type="button"
+            class="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700"
+            @click="openAddModal"
+          >
+            + Tambah Data
+          </button>
         </div>
-      </div>
-      </div>
-      <div class="relative">
-        <input v-model="searchQuery" type="text" placeholder="Cari keterangan atau kategori..."
-        class="w-full md:w-64 pl-4 pr-10 py-1.5 placeholder:text-gray-500 placeholder:italic placeholder:text-sm rounded-lg bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 focus:ring-2 focus:ring-blue-500 outline-none text-gray-800 dark:text-white">
-      </div>
+      </header>
 
-    </div>
-    <button @click="downloadPDF"
-      class="bg-gray-700 hover:bg-gray-800 text-white px-4 py-2 rounded-lg flex items-center justify-center gap-2 transition-colors shadow-lg shadow-gray-500/30 whitespace-nowrap flex-1 md:flex-none">
-      <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z" />
-      </svg>
-      <span class="text-sm font-medium">Cetak PDF</span>
-    </button>
-    <button @click="openAddModal"
-      class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg flex items-center justify-center gap-2 transition-colors shadow-lg shadow-blue-500/30 whitespace-nowrap">
-      <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
-      </svg>
-      <span class="text-sm font-medium">Tambah Data</span>
-    </button>
-    
-  </div>
-
-      <div class="overflow-x-auto">
-        <table class="w-full text-left">
-          <thead class="bg-gray-50 dark:bg-gray-700/50 text-gray-500 dark:text-gray-400 text-xs uppercase">
-            <tr class="text-center">
-              <th class="px-6 py-4">Tanggal</th>
-              <th class="px-6 py-4">Keterangan</th>
-              <th class="px-6 py-4">Kategori</th>
-              <th class="px-6 hidden lg:block py-4">Tipe</th>
-              <th class="px-6 py-4 text-right">Jumlah</th>
-              <th class="px-6 py-4 text-center">Aksi</th>
-            </tr>
-          </thead>
-          <tbody class="divide-y divide-gray-100 text-center dark:divide-gray-700">
-            <tr v-if="isLoading">
-              <td colspan="6" class="px-6 py-8 text-center text-gray-500">Memuat data...</td>
-            </tr>
-            <tr v-else-if="filteredTransactions.length === 0">
-              <td colspan="6" class="px-6 py-8 text-center text-gray-500">Belum ada data keuangan.</td>
-            </tr>
-            <tr v-else v-for="item in filteredTransactions" :key="item.id"
-              class="hover:bg-gray-50 dark:hover:bg-gray-700/30 transition-colors">
-              <td class="px-6 py-4 text-sm text-gray-600 dark:text-gray-300 whitespace-nowrap">
-                {{ formatDate(item.tanggal) }}
-              </td>
-              <td class="px-6 py-4 text-sm font-medium text-gray-900 dark:text-white">
-                {{ item.keterangan }}
-              </td>
-              <td class="px-6 py-4">
-                <span
-                  class="px-2 py-1 text-xs font-medium bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 rounded-md">
-                  {{ item.kategori }}
-                </span>
-              </td>
-              <td class="px-6 hidden lg:block py-4">
-                <span class="px-2 py-1 text-xs font-bold rounded-full"
-                  :class="item.tipe === 'Masuk' ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'">
-                  {{ item.tipe }}
-                </span>
-              </td>
-              <td class="px-6 py-4 text-sm font-bold text-right whitespace-nowrap"
-                :class="item.tipe === 'Masuk' ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'">
-                {{ item.tipe === 'Keluar' ? '-' : '+' }} {{ formatRupiah(item.jumlah) }}
-              </td>
-              <td class="px-6 py-4">
-  <div class="relative flex justify-center">
-
-    <div class="hidden lg:flex items-center gap-2">
-      <button @click="openEditModal(item)"
-        class="p-2 text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded-lg transition-colors"
-        title="Edit">
-        <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-            d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-        </svg>
-      </button>
-      <button @click="deleteTransaction(item.id)"
-        class="p-2 text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors"
-        title="Hapus">
-        <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-            d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-        </svg>
-      </button>
-    </div>
-
-    <div class="lg:hidden relative">
-      <button @click="toggleDropdown(item.id)"
-        class="p-2 text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-700 rounded-lg transition-colors">
-        <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-            d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z" />
-        </svg>
-      </button>
-
-      <div v-if="activeDropdown === item.id" 
-           @click="activeDropdown = null"
-           class="fixed inset-0 z-10 cursor-default"></div>
-
-      <div v-if="activeDropdown === item.id"
-        class="absolute right-0 mt-2 w-32 bg-white dark:bg-gray-800 rounded-lg shadow-xl border border-gray-100 dark:border-gray-700 z-20 overflow-hidden">
-        
-        <button @click="handleAction('edit', item)"
-          class="w-full text-left px-4 py-3 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 flex items-center gap-2">
-          <svg class="w-4 h-4 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>
-          Edit
-        </button>
-        
-        <div class="border-t border-gray-100 dark:border-gray-700"></div>
-        
-        <button @click="handleAction('delete', item)"
-          class="w-full text-left px-4 py-3 text-sm text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 flex items-center gap-2">
-          <svg class="w-4 h-4 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
-          Hapus
-        </button>
-      </div>
-    </div>
-
-  </div>
-</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
-
-    <div v-if="isModalOpen" class="fixed inset-0 z-50 flex  items-center justify-center p-4">
-      <div class="absolute inset-0 bg-black/50 backdrop-blur-sm" @click="closeModal"></div>
+      <!-- PESAN ERROR -->
       <div
-        class="relative bg-[#F7FBFC] lg:my-8 dark:bg-gray-800 w-full max-w-md lg:max-w-xl rounded-2xl shadow-xl overflow-hidden">
+        v-if="errorMessage"
+        class="flex items-start justify-between gap-3 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/50 dark:text-red-300"
+      >
+        <span>{{ errorMessage }}</span>
+        <button
+          type="button"
+          class="font-bold"
+          @click="errorMessage = ''"
+        >
+          ✕
+        </button>
+      </div>
 
-        <div class="px-6 py-4 border-b border-gray-400 dark:border-gray-700 flex justify-between items-center">
-          <h3 class="text-lg font-bold text-gray-900 dark:text-white">
-            {{ isEditing ? 'Edit Data' : 'Tambah Data Baru' }}
-          </h3>
-          <button @click="closeModal" class="text-gray-400 hover:text-gray-600">
-            <svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
-            </svg>
+      <!-- RINGKASAN -->
+      <section class="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <div
+          class="rounded-2xl border p-5 shadow-sm"
+          :class="isDark ? 'border-slate-800 bg-slate-900' : 'border-slate-200 bg-white'"
+        >
+          <p class="text-sm text-slate-500 dark:text-slate-400">Total Masuk</p>
+          <p class="mt-2 text-xl font-bold text-emerald-600">
+            {{ formatCurrency(totalMasuk) }}
+          </p>
+        </div>
+
+        <div
+          class="rounded-2xl border p-5 shadow-sm"
+          :class="isDark ? 'border-slate-800 bg-slate-900' : 'border-slate-200 bg-white'"
+        >
+          <p class="text-sm text-slate-500 dark:text-slate-400">Total Keluar</p>
+          <p class="mt-2 text-xl font-bold text-red-600">
+            {{ formatCurrency(totalKeluar) }}
+          </p>
+        </div>
+
+        <div
+          class="rounded-2xl border p-5 shadow-sm"
+          :class="isDark ? 'border-slate-800 bg-slate-900' : 'border-slate-200 bg-white'"
+        >
+          <p class="text-sm text-slate-500 dark:text-slate-400">Saldo Kas</p>
+          <p
+            class="mt-2 text-xl font-bold"
+            :class="saldo < 0 ? 'text-red-600' : 'text-blue-600'"
+          >
+            {{ formatCurrency(saldo) }}
+          </p>
+        </div>
+
+        <div
+          class="rounded-2xl border p-5 shadow-sm"
+          :class="isDark ? 'border-slate-800 bg-slate-900' : 'border-slate-200 bg-white'"
+        >
+          <p class="text-sm text-slate-500 dark:text-slate-400">
+            Sisa Pinjaman Anggota
+          </p>
+          <p class="mt-2 text-xl font-bold text-orange-600">
+            {{ formatCurrency(totalPinjamanAktif) }}
+          </p>
+        </div>
+      </section>
+
+      <!-- FILTER -->
+      <section
+        class="rounded-2xl border p-4 shadow-sm sm:p-5"
+        :class="isDark ? 'border-slate-800 bg-slate-900' : 'border-slate-200 bg-white'"
+      >
+        <div class="grid grid-cols-1 gap-3 md:grid-cols-3">
+          <input
+            v-model="searchQuery"
+            type="search"
+            placeholder="Cari keterangan atau nama anggota..."
+            class="w-full rounded-lg border px-3 py-2.5 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 dark:border-slate-700 dark:bg-slate-950"
+          />
+
+          <select
+            v-model="selectedYear"
+            class="w-full rounded-lg border px-3 py-2.5 outline-none focus:border-blue-500 dark:border-slate-700 dark:bg-slate-950"
+          >
+            <option value="">Semua Tahun</option>
+            <option
+              v-for="year in years"
+              :key="year"
+              :value="year"
+            >
+              {{ year }}
+            </option>
+          </select>
+
+          <button
+            type="button"
+            class="rounded-lg border px-3 py-2.5 text-sm font-medium dark:border-slate-700"
+            @click="refreshData"
+          >
+            Muat Ulang Data
           </button>
         </div>
 
-        <div class="p-6 space-y-4">
-          <div class="grid grid-cols-2 gap-4">
-            <label class="cursor-pointer border-gray-400 border rounded-lg p-3 text-center transition-all"
-              :class="form.tipe === 'Masuk' ? 'bg-green-50 border-green-500 text-green-700 dark:bg-green-900/20 dark:text-green-400' : 'border-gray-200 dark:border-gray-700 opacity-60'">
-              <input type="radio" v-model="form.tipe" value="Masuk" class="hidden">
-              <span class="font-bold">Pemasukan</span>
+        <div class="mt-4 flex flex-wrap gap-2">
+          <button
+            v-for="tab in [
+              { value: 'all', label: 'Semua Transaksi' },
+              { value: 'loan', label: 'Pinjaman' },
+              { value: 'payment', label: 'Pembayaran Pinjaman' }
+            ]"
+            :key="tab.value"
+            type="button"
+            class="rounded-full px-4 py-2 text-sm font-medium"
+            :class="activeTab === tab.value
+              ? 'bg-blue-600 text-white'
+              : isDark
+                ? 'bg-slate-800 text-slate-300'
+                : 'bg-slate-100 text-slate-600'"
+            @click="activeTab = tab.value"
+          >
+            {{ tab.label }}
+          </button>
+        </div>
+      </section>
+
+      <!-- TABEL TRANSAKSI -->
+      <section
+        class="overflow-hidden rounded-2xl border shadow-sm"
+        :class="isDark ? 'border-slate-800 bg-slate-900' : 'border-slate-200 bg-white'"
+      >
+        <div class="flex items-center justify-between gap-3 p-5">
+          <div>
+            <h2 class="text-lg font-bold">Daftar Transaksi</h2>
+            <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">
+              {{ filteredTransactions.length }} transaksi ditampilkan
+            </p>
+          </div>
+        </div>
+
+        <div v-if="isLoading" class="p-10 text-center text-slate-500">
+          Memuat data...
+        </div>
+
+        <div
+          v-else-if="filteredTransactions.length === 0"
+          class="p-10 text-center text-slate-500"
+        >
+          Tidak ada data transaksi.
+        </div>
+
+        <div v-else class="overflow-x-auto">
+          <table class="w-full min-w-[1100px] text-left text-sm">
+            <thead
+              :class="isDark
+                ? 'bg-slate-800 text-slate-300'
+                : 'bg-slate-100 text-slate-600'"
+            >
+              <tr>
+                <th class="px-4 py-3 font-semibold">Tanggal</th>
+                <th class="px-4 py-3 font-semibold">Nama Anggota</th>
+                <th class="px-4 py-3 font-semibold">Keterangan</th>
+                <th class="px-4 py-3 font-semibold">Kategori</th>
+                <th class="px-4 py-3 font-semibold">Tipe</th>
+                <th class="px-4 py-3 text-right font-semibold">Jumlah</th>
+                <th class="px-4 py-3 font-semibold">Status Pinjaman</th>
+                <th class="px-4 py-3 text-center font-semibold">Aksi</th>
+              </tr>
+            </thead>
+
+            <tbody>
+              <tr
+                v-for="item in filteredTransactions"
+                :key="item.id"
+                class="border-t dark:border-slate-800"
+                :class="isDark ? 'hover:bg-slate-800/50' : 'hover:bg-slate-50'"
+              >
+                <td class="whitespace-nowrap px-4 py-3">
+                  {{ formatDate(item.tanggal) }}
+                </td>
+
+                <td class="px-4 py-3 font-medium">
+                  {{ getMemberName(item.anggota_id) }}
+                </td>
+
+                <td class="max-w-xs px-4 py-3">
+                  <span class="line-clamp-2">
+                    {{ item.keterangan || '-' }}
+                  </span>
+                </td>
+
+                <td class="px-4 py-3">
+                  {{ item.kategori }}
+                </td>
+
+                <td class="px-4 py-3">
+                  <span
+                    class="rounded-full px-2.5 py-1 text-xs font-semibold"
+                    :class="item.tipe === 'Masuk'
+                      ? 'bg-emerald-100 text-emerald-700'
+                      : 'bg-red-100 text-red-700'"
+                  >
+                    {{ item.tipe }}
+                  </span>
+                </td>
+
+                <td class="whitespace-nowrap px-4 py-3 text-right font-semibold">
+                  {{ formatCurrency(item.jumlah) }}
+                </td>
+
+                <td class="px-4 py-3">
+                  <span
+                    v-if="isLoan(item)"
+                    class="whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-semibold"
+                    :class="getDueClass(getDueStatus(item))"
+                  >
+                    {{ getDueStatus(item) }}
+                  </span>
+
+                  <span
+                    v-else-if="isLoanPayment(item)"
+                    class="text-xs text-slate-500"
+                  >
+                    Pembayaran
+                  </span>
+
+                  <span v-else class="text-slate-400">-</span>
+                </td>
+
+                <td class="px-4 py-3">
+                  <div class="flex justify-center gap-2">
+                    <button
+                      type="button"
+                      class="rounded-md bg-amber-100 px-3 py-1.5 text-xs font-semibold text-amber-700 hover:bg-amber-200"
+                      @click="openEditModal(item)"
+                    >
+                      Edit
+                    </button>
+
+                    <button
+                      type="button"
+                      class="rounded-md bg-red-100 px-3 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-200"
+                      @click="deleteTransaction(item)"
+                    >
+                      Hapus
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+
+    <!-- MODAL TAMBAH / EDIT -->
+    <div
+      v-if="isModalOpen"
+      class="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/50 p-4"
+      @click.self="closeModal"
+    >
+      <section
+        class="my-4 max-h-[92vh] w-full max-w-2xl overflow-y-auto rounded-2xl p-6 shadow-2xl"
+        :class="isDark ? 'bg-slate-900 text-slate-100' : 'bg-white text-slate-800'"
+      >
+        <div class="mb-6 flex items-center justify-between gap-3">
+          <div>
+            <h2 class="text-xl font-bold">
+              {{ isEditing ? 'Edit Transaksi' : 'Tambah Transaksi' }}
+            </h2>
+            <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">
+              Isi data transaksi dengan benar.
+            </p>
+          </div>
+
+          <button
+            type="button"
+            class="rounded-lg px-3 py-2 text-xl hover:bg-slate-100 dark:hover:bg-slate-800"
+            :disabled="isSaving"
+            @click="closeModal"
+          >
+            ✕
+          </button>
+        </div>
+
+        <form class="space-y-4" @submit.prevent="handleSubmit">
+          <!-- TANGGAL -->
+          <div>
+            <label class="mb-1.5 block text-sm font-semibold">
+              Tanggal Transaksi
             </label>
-            <label class="cursor-pointer border-gray-400 border rounded-lg p-3 text-center transition-all"
-              :class="form.tipe === 'Keluar' ? 'bg-red-50 border-red-500 text-red-700 dark:bg-red-900/20 dark:text-red-400' : 'border-gray-200 dark:border-gray-700 opacity-60'">
-              <input type="radio" v-model="form.tipe" value="Keluar" class="hidden">
-              <span class="font-bold">Pengeluaran</span>
+            <input
+              v-model="form.tanggal"
+              type="date"
+              required
+              class="w-full rounded-lg border px-3 py-2.5 outline-none focus:border-blue-500 dark:border-slate-700 dark:bg-slate-950"
+            />
+          </div>
+
+          <!-- KATEGORI -->
+          <div>
+            <label class="mb-1.5 block text-sm font-semibold">
+              Kategori
             </label>
-          </div>
-
-          <div>
-            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Tanggal</label>
-            <input v-model="form.tanggal" type="date"
-              class="w-full px-4 py-2 rounded-lg border border-gray-400 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 outline-none">
-          </div>
-
-          <div>
-            <label class="block text-sm font-normal text-gray-700 dark:text-gray-300 mb-1">Jumlah (Rp)</label>
-            <input type="text" :value="displayJumlah" @input="onInputJumlah" placeholder="0"
-              class="w-full px-4 py-2 rounded-lg border border-gray-400 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 outline-none">
-          </div>
-
-          <div>
-            <label class="block text-sm font-normal text-gray-700 dark:text-gray-300 mb-1">Kategori</label>
-            <select v-model="form.kategori"
-              class="w-full px-4 py-2 rounded-lg border border-gray-400 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 outline-none">
-              <option v-for="cat in categories" :key="cat" :value="cat">{{ cat }}</option>
+            <select
+              v-model="form.kategori"
+              required
+              class="w-full rounded-lg border px-3 py-2.5 outline-none focus:border-blue-500 dark:border-slate-700 dark:bg-slate-950"
+              @change="onCategoryChange"
+            >
+              <option
+                v-for="category in categories"
+                :key="category"
+                :value="category"
+              >
+                {{ category }}
+              </option>
             </select>
           </div>
 
-          <div>
-            <label class="block text-sm font-normal text-gray-700 dark:text-gray-300 mb-1">Keterangan</label>
-            <textarea v-model="form.keterangan" rows="3" placeholder="Contoh: Bayar Iuaran bulan ini..."
-              class="w-full px-4 py-2 rounded-lg border border-gray-400 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 outline-none"></textarea>
+          <!-- NAMA ANGGOTA UNTUK PINJAMAN -->
+          <div v-if="form.kategori === 'Pinjam'">
+            <label class="mb-1.5 block text-sm font-semibold">
+              Nama Anggota
+            </label>
+            <select
+              v-model="form.anggota_id"
+              required
+              class="w-full rounded-lg border px-3 py-2.5 outline-none focus:border-blue-500 dark:border-slate-700 dark:bg-slate-950"
+            >
+              <option value="" disabled>
+                Pilih anggota yang meminjam
+              </option>
+              <option
+                v-for="member in members"
+                :key="member.id"
+                :value="member.id"
+              >
+                {{ member.nama }}
+              </option>
+            </select>
+
+            <p
+              v-if="members.length === 0"
+              class="mt-1 text-sm text-red-600"
+            >
+              Belum ada anggota. Tambahkan anggota terlebih dahulu.
+            </p>
           </div>
-        </div>
 
-        <div class="px-6 py-4 bg-gray-50 dark:bg-gray-700/30 flex justify-end gap-3">
-          <button @click="closeModal"
-            class="px-4 py-2 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 rounded-lg transition-colors">Batal</button>
-          <button @click="handleSubmit"
-            class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors font-medium">
-            {{ isEditing ? 'Simpan Perubahan' : 'Simpan Data' }}
-          </button>
-        </div>
+          <!-- PILIH PINJAMAN UNTUK PEMBAYARAN -->
+          <div v-if="form.kategori === 'Bayar Pinjaman'">
+            <label class="mb-1.5 block text-sm font-semibold">
+              Pinjaman yang Dibayar
+            </label>
+            <select
+              v-model="form.pinjaman_id"
+              required
+              class="w-full rounded-lg border px-3 py-2.5 outline-none focus:border-blue-500 dark:border-slate-700 dark:bg-slate-950"
+              @change="onLoanChange"
+            >
+              <option :value="null" disabled>
+                Pilih pinjaman
+              </option>
 
-      </div>
+              <option
+                v-for="loan in getLoanOptions(
+                  isEditing && isLoanPayment(form) ? form.id : null
+                )"
+                :key="loan.id"
+                :value="loan.id"
+              >
+                {{ getMemberName(loan.anggota_id) }}
+                — {{ loan.keterangan }}
+                — Sisa {{ formatCurrency(getRemaining(
+                  loan.id,
+                  isEditing && isLoanPayment(form) ? form.id : null
+                )) }}
+              </option>
+            </select>
+
+            <p
+              v-if="getLoanOptions(
+                isEditing && isLoanPayment(form) ? form.id : null
+              ).length === 0"
+              class="mt-1 text-sm text-amber-600"
+            >
+              Tidak ada pinjaman dengan sisa pembayaran.
+            </p>
+
+            <div
+              v-if="form.pinjaman_id"
+              class="mt-2 rounded-lg bg-blue-50 p-3 text-sm text-blue-800 dark:bg-blue-950 dark:text-blue-200"
+            >
+              Anggota:
+              <strong>{{ getMemberName(form.anggota_id) }}</strong>
+            </div>
+          </div>
+
+          <!-- KETERANGAN -->
+          <div>
+            <label class="mb-1.5 block text-sm font-semibold">
+              Keterangan
+            </label>
+            <textarea
+              v-model="form.keterangan"
+              rows="3"
+              required
+              placeholder="Masukkan keterangan transaksi"
+              class="w-full rounded-lg border px-3 py-2.5 outline-none focus:border-blue-500 dark:border-slate-700 dark:bg-slate-950"
+            />
+          </div>
+
+          <!-- TIPE -->
+          <div v-if="!['Pinjam', 'Bayar Pinjaman'].includes(form.kategori)">
+            <label class="mb-1.5 block text-sm font-semibold">
+              Tipe Transaksi
+            </label>
+            <select
+              v-model="form.tipe"
+              required
+              class="w-full rounded-lg border px-3 py-2.5 outline-none focus:border-blue-500 dark:border-slate-700 dark:bg-slate-950"
+            >
+              <option value="Masuk">Masuk</option>
+              <option value="Keluar">Keluar</option>
+            </select>
+          </div>
+
+          <div
+            v-else
+            class="rounded-lg bg-slate-100 p-3 text-sm text-slate-700 dark:bg-slate-800 dark:text-slate-300"
+          >
+            Tipe transaksi:
+            <strong>
+              {{ form.kategori === 'Pinjam' ? 'Keluar' : 'Masuk' }}
+            </strong>
+            <p class="mt-1 text-xs">
+              Tipe ditentukan otomatis berdasarkan kategori transaksi.
+            </p>
+          </div>
+
+          <!-- JUMLAH -->
+          <div>
+            <label class="mb-1.5 block text-sm font-semibold">
+              Jumlah (Rp)
+            </label>
+            <input
+              v-model="form.jumlah"
+              type="number"
+              min="1"
+              step="1"
+              required
+              placeholder="Contoh: 500000"
+              class="w-full rounded-lg border px-3 py-2.5 outline-none focus:border-blue-500 dark:border-slate-700 dark:bg-slate-950"
+            />
+          </div>
+
+          <!-- INFO JATUH TEMPO OTOMATIS -->
+          <div
+            v-if="form.kategori === 'Pinjam' && form.tanggal"
+            class="rounded-lg bg-amber-50 p-3 text-sm text-amber-800 dark:bg-amber-950/50 dark:text-amber-200"
+          >
+            <strong>Jatuh tempo otomatis:</strong>
+            {{ formatDate(addThreeMonths(form.tanggal)) }}.
+            Pinjaman akan ditandai jatuh tempo jika belum lunas pada
+            tanggal tersebut.
+          </div>
+
+          <!-- ERROR MODAL -->
+          <div
+            v-if="errorMessage"
+            class="rounded-lg bg-red-50 p-3 text-sm text-red-700 dark:bg-red-950/50 dark:text-red-300"
+          >
+            {{ errorMessage }}
+          </div>
+
+          <!-- TOMBOL -->
+          <div class="flex flex-col-reverse gap-3 pt-2 sm:flex-row sm:justify-end">
+            <button
+              type="button"
+              class="rounded-lg border px-5 py-2.5 font-semibold dark:border-slate-700"
+              :disabled="isSaving"
+              @click="closeModal"
+            >
+              Batal
+            </button>
+
+            <button
+              type="submit"
+              class="rounded-lg bg-blue-600 px-5 py-2.5 font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+              :disabled="isSaving"
+            >
+              {{
+                isSaving
+                  ? 'Menyimpan...'
+                  : isEditing
+                    ? 'Simpan Perubahan'
+                    : 'Simpan Transaksi'
+              }}
+            </button>
+          </div>
+        </form>
+      </section>
     </div>
-
   </div>
 </template>

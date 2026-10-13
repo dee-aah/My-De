@@ -7,6 +7,7 @@ import { DotLottie } from '@lottiefiles/dotlottie-web';
 import Main from '../layouts/Main.vue'
 import Messages from '../views/Messages.vue'
 import Finance from '../views/Finance.vue' 
+import Anggota from '../views/Anggota.vue'
 
   
 const routes = [
@@ -70,6 +71,16 @@ const routes = [
       layout: 'Dashboard' 
     }
   },
+  {
+    path: '/anggota',
+    name: 'Anggota',
+    component: Anggota,
+    meta: { 
+      requiresAuth: true, 
+      layout: 'Dashboard' 
+    }
+  },
+  
 ]
 
 
