@@ -122,7 +122,7 @@ onMounted(() => {
           </div>
 
           <div class="relative rounded-xl overflow-hidden shadow-2xl bg-gray-200 dark:bg-gray-800 aspect-[4/5] group">
-            <img src="/myp.jpeg" alt="Profile Photo"
+            <img src="/myp.jpg" alt="Profile Photo"
               class="object-cover w-full h-full transform transition-transform duration-500 group-hover:scale-110" />
 
             <div class="absolute bottom-0 left-0 right-0 p-6 bg-gradient-to-t from-gray-900/90 to-transparent">
