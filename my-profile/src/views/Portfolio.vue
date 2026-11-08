@@ -39,13 +39,13 @@ const projects = [
   },
   {
     id: 4,
-    title: 'Sistem Informasi Keuangan BMKG',
+    title: 'Sistem Informasi Keuangan Barudak Mania Kikisik Galunggung',
     category: 'Web Dev',
     image: 'https://images.unsplash.com/photo-1460925895917-afdab827c52f?ixlib=rb-4.0.3&auto=format&fit=crop&w=800&q=80',
     description: 'Sistem manajemen data pegawai pemerintah dengan fitur laporan PDF dan Excel otomatis.',
-    tech: ['PHP', 'Bootstrap', 'MySQL', 'Xampp'],
-    demoLink: '#',
-    repoLink: 'https://github.com/dee-aah/sistem-informasi-.git'
+    tech: ['Vue.js', 'Supabase', 'Vercel', 'Tailwind'],
+    demoLink: 'https://dedeahmadmaolana.vercel.app/Laporan-keuangan',
+    repoLink: '#'
   },
   {
     id: 5,

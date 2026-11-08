@@ -8,7 +8,7 @@ import Main from '../layouts/Main.vue'
 import Messages from '../views/Messages.vue'
 import Finance from '../views/Finance.vue' 
 import Anggota from '../views/Anggota.vue'
-
+import WelcomeView from '../views/WelcomeView.vue'
   
 const routes = [
   
@@ -25,6 +25,12 @@ const routes = [
   {
     path: '/home',
     component: () => import('@/views/Home.vue')
+  },
+  {
+    path: '/',
+    name: 'Welcome',
+    component: () => import('@/views/WelcomeView.vue'),
+    meta: { hideLayout: true }
   },
   {
     path: '/Portfolio',
@@ -52,6 +58,14 @@ const routes = [
             requiresAuth: true,
             layout : 'Dashboard'
           } 
+  },
+  {
+    path: '/',
+    name: 'Welcome',
+    component: () => import('@/views/WelcomeView.vue'),
+    meta: {
+      layout: 'Empty'
+    }
   },
   {
     path: '/messages',
