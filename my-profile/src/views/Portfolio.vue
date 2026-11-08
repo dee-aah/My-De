@@ -51,9 +51,9 @@ const projects = [
     id: 5,
     title: 'Klasifikasi Pesan Spam Dan Toxic ',
     category: 'Data Analysis',
-    image: 'https://images.unsplash.com/photo-1551288049-bebda4e38f71?ixlib=rb-4.0.3&auto=format&fit=crop&w=800&q=80', // Placeholder
+    image: 'indobert.jpg', // Placeholder
     description: 'Mengimplementasikan model Transformer berbasis IndoBERT untuk klasifikasi pesan spam dan toxic pada live chat Youtube MPL Indonesia.',
-    tech: ['Python', 'IndoBERT', 'Stremlit'],
+    tech: ['Python', 'IndoBERT', 'Streamlit', 'CRISP-DM'],
     demoLink: 'https://dee-aah-tugas-akhir-app-5ig4yh.streamlit.app',
     repoLink: 'https://github.com/dee-aah/Klasifikasi-Pesan-Spam-dan-Toxic.git'
   }
