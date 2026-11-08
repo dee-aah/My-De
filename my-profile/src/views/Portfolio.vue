@@ -51,7 +51,7 @@ const projects = [
     id: 5,
     title: 'Klasifikasi Pesan Spam Dan Toxic ',
     category: 'Data Analysis',
-    image: 'indobert.jpg', // Placeholder
+    image: 'indobert.jpeg', // Placeholder
     description: 'Mengimplementasikan model Transformer berbasis IndoBERT untuk klasifikasi pesan spam dan toxic pada live chat Youtube MPL Indonesia.',
     tech: ['Python', 'IndoBERT', 'Streamlit', 'CRISP-DM'],
     demoLink: 'https://dee-aah-tugas-akhir-app-5ig4yh.streamlit.app',
